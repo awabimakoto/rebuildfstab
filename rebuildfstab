@@ -1,0 +1,54 @@
+#!/bin/sh
+function fstype {
+[ -n "$1" ] || exit 1
+DEVINFO="$(blkid $1)"
+FSTYPE="${DEVINFO##*TYPE=}"
+FSTYPE="${FSTYPE%%[    ]*}"
+FSTYPE="$(echo "$FSTYPE"|tr -d '"')"
+echo "$FSTYPE"
+}
+TMP="/tmp/fstab.$$.tmp"
+ADDEDBY="# auto added"
+FDISKL=`fdisk -l | awk '$1 ~ /dev/{printf " %s ",$1}'`
+grep -v "$ADDEDBY" /etc/fstab > "$TMP"
+for i in `find /sys/block/*/ -name dev`; do
+  case "$i" in
+    *loop*|*ram*|*nbd*)
+      continue
+      ;;
+  esac
+  DEVNAME=`echo "$i"| tr [!] [/] | awk 'BEGIN{FS="/"}{print $(NF-1)}'`
+  DEVMAJOR="$(cat $i|cut -f1 -d:)"
+  FSTYPE=""
+  [ "$DEVMAJOR" != 2 -a -z "$FSTYPE" ] && FSTYPE="$(fstype "/dev/$DEVNAME")"
+  if [ -z "$FSTYPE" ]; then
+    case "$DEVMAJOR" in
+      2|98)
+        FSTYPE="auto"
+        ;;
+      3|8|11|22|33|34)
+        case "$FDISKL" in *"/dev/$DEVNAME "*) FSTYPE="$(fstype /dev/$DEVNAME)" ;; esac
+        case "$CDROMS" in *"/dev/$DEVNAME"*) FSTYPE="auto" ;; esac
+        ;;
+      179|9|259) # MMC or MD (software raid)
+        FSTYPE="$(fstype /dev/$DEVNAME)"
+        ;;
+    esac
+  fi
+  [ -z "$FSTYPE" ] && continue
+  MOUNTPOINT="/mnt/$DEVNAME"
+  OPTIONS="noauto,users,exec"
+  case "$FSTYPE" in
+    ntfs) FSTYPE="ntfs-3g"; OPTIONS="$OPTIONS" ;;
+    vfat|msdos) OPTIONS="${OPTIONS},umask=000" ;;
+    ext2|ext3) OPTIONS="${OPTIONS},relatime" ;;
+    swap) OPTIONS="defaults"; MOUNTPOINT="none" ;;
+  esac
+  if [ "$MOUNTPOINT" != "none" ]; then
+    mkdir -p "/mnt/$DEVNAME" 2>/dev/null >/dev/null
+  fi	
+  printf "%s\t%s\t%s\t%s\t%s\n" "/dev/$DEVNAME" "$MOUNTPOINT" "$FSTYPE" "$OPTIONS" "0 0 $ADDEDBY" | sed "/dev\/sda/d" >>"$TMP"
+done
+mv "$TMP" /etc/fstab
+rm -f /var/run/rebuildfstab.pid
+sync
